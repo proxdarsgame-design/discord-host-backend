@@ -1,7 +1,7 @@
 {
   "name": "discord-host-backend",
   "version": "1.0.0",
-  "description": "Backend API for Student Host",
+  "description": "Backend engine for CoreHost platform",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
