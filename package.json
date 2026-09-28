@@ -1,7 +1,7 @@
 {
   "name": "discord-host-backend",
-  "version": "1.0.0",
-  "description": "Backend engine for CoreHost platform",
+  "version": "2.0.0",
+  "description": "CoreHost execution engine with inline code support",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
