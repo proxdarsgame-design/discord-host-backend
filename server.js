@@ -5,10 +5,9 @@ const path = require('path');
 const fs = require('fs');
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(cors());
 
-// Active process container
 const runningBots = {};
 
 app.get('/', (req, res) => {
@@ -16,87 +15,97 @@ app.get('/', (req, res) => {
 });
 
 app.post('/api/deploy', (req, res) => {
-    const { owner, botName, botToken, githubUrl } = req.body;
+    const { owner, botName, botToken, deployMethod, githubUrl, files } = req.body;
 
-    if (!botName || !botToken || !githubUrl) {
-        return res.status(400).json({ error: 'Missing required parameters.' });
+    if (!botName || !botToken) {
+        return res.status(400).json({ error: 'Bot Name and Bot Token are required.' });
     }
 
-    // Sanitize identifier
-    const folderName = `${owner}_${botName}`.replace(/[^a-zA-Z0-0_]/g, '');
+    const folderName = `${owner}_${botName}`.replace(/[^a-zA-Z0-9_]/g, '');
     const botDir = path.join(__dirname, 'deployments', folderName);
 
-    // Stop existing instance if already running
+    // Terminate existing running instance
     if (runningBots[folderName]) {
         try {
             runningBots[folderName].kill();
             delete runningBots[folderName];
         } catch (e) {
-            console.log('Error terminating running process:', e);
+            console.log('Error stopping existing process:', e);
         }
     }
 
-    // Clean destination directory
+    // Reset folder directory
     if (fs.existsSync(botDir)) {
         fs.rmSync(botDir, { recursive: true, force: true });
     }
-
     fs.mkdirSync(botDir, { recursive: true });
 
-    // Step 1: Clone repository
-    exec(`git clone ${githubUrl} .`, { cwd: botDir }, (cloneErr) => {
-        if (cloneErr) {
-            console.error('Git Clone Error:', cloneErr);
-            return res.status(500).json({ error: 'Failed to clone repository. Ensure the repository is PUBLIC.' });
+    if (deployMethod === 'github') {
+        if (!githubUrl) return res.status(400).json({ error: 'GitHub URL is required.' });
+
+        exec(`git clone ${githubUrl} .`, { cwd: botDir }, (cloneErr) => {
+            if (cloneErr) {
+                return res.status(500).json({ error: 'Failed to clone repository.' });
+            }
+            startBotProcess(botDir, folderName, botToken, res, botName);
+        });
+    } else {
+        // Direct Editor/Files Mode
+        if (!files || Object.keys(files).length === 0) {
+            return res.status(400).json({ error: 'No code files provided.' });
         }
 
-        // Step 2: Install dependencies
-        exec('npm install --only=production', { cwd: botDir }, (installErr) => {
-            if (installErr) {
-                console.error('npm install Error:', installErr);
-                return res.status(500).json({ error: 'Failed to install npm dependencies.' });
-            }
-
-            // Determine entry point (index.js, bot.js, server.js, or main.js)
-            let entryFile = 'index.js';
-            const possibleEntries = ['index.js', 'bot.js', 'server.js', 'main.js'];
-            for (const file of possibleEntries) {
-                if (fs.existsSync(path.join(botDir, file))) {
-                    entryFile = file;
-                    break;
-                }
-            }
-
-            // Step 3: Spawn process in background
-            const botEnv = { ...process.env, TOKEN: botToken, DISCORD_TOKEN: botToken };
-            const botProcess = spawn('node', [entryFile], {
-                cwd: botDir,
-                env: botEnv
-            });
-
-            botProcess.stdout.on('data', (data) => {
-                console.log(`[${folderName} STDOUT]: ${data}`);
-            });
-
-            botProcess.stderr.on('data', (data) => {
-                console.error(`[${folderName} STDERR]: ${data}`);
-            });
-
-            botProcess.on('close', (code) => {
-                console.log(`[${folderName}] Process exited with code ${code}`);
-                delete runningBots[folderName];
-            });
-
-            runningBots[folderName] = botProcess;
-
-            return res.json({ 
-                message: `Bot '${botName}' successfully deployed and launched live!` 
-            });
+        // Write files to disk
+        Object.keys(files).forEach(fileName => {
+            fs.writeFileSync(path.join(botDir, fileName), files[fileName]);
         });
-    });
+
+        startBotProcess(botDir, folderName, botToken, res, botName);
+    }
 });
 
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
+function startBotProcess(botDir, folderName, botToken, res, botName) {
+    // Install npm dependencies if package.json exists
+    const hasPackageJson = fs.existsSync(path.join(botDir, 'package.json'));
+    const installCmd = hasPackageJson ? 'npm install --only=production' : 'npm install discord.js';
+
+    exec(installCmd, { cwd: botDir }, (installErr) => {
+        if (installErr) {
+            console.error('NPM Install Warning:', installErr);
+        }
+
+        let entryFile = 'index.js';
+        const possibleEntries = ['index.js', 'bot.js', 'main.js', 'server.js'];
+        for (const file of possibleEntries) {
+            if (fs.existsSync(path.join(botDir, file))) {
+                entryFile = file;
+                break;
+            }
+        }
+
+        const botEnv = { ...process.env, TOKEN: botToken, DISCORD_TOKEN: botToken };
+        const botProcess = spawn('node', [entryFile], {
+            cwd: botDir,
+            env: botEnv
+        });
+
+        botProcess.stdout.on('data', (data) => console.log(`[${folderName}]: ${data}`));
+        botProcess.stderr.on('data', (data) => console.error(`[${folderName} ERR]: ${data}`));
+        
+        botProcess.on('close', (code) => {
+            delete runningBots[folderName];
+        });
+
+        runningBots[folderName] = botProcess;
+
+        return res.json({ 
+            message: `Bot '${botName}' launched live!` 
+        });
+    });
+}
+
+// Binds immediately on 0.0.0.0
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`CoreHost Server running on port ${PORT}`);
 });
